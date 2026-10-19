@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Relative asset paths keep the app working when hosted under /wms-control/ on GitHub Pages.
+// GitHub Pages project site is hosted under /wms-control/.
 export default defineConfig({
-  base: './',
+  base: '/wms-control/',
   plugins: [react()],
 })
