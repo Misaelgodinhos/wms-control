@@ -6,6 +6,9 @@ import './style.css'
 
 type Profile = { id: string; full_name: string | null; role: string; workspace_id: string | null; active: boolean }
 type PendingProfile = { id: string; full_name: string | null; created_at: string }
+type ProductOption = { id: string; name: string; sku: string }
+type WarehouseOption = { id: string; name: string; code: string }
+type LocationOption = { id: string; code: string; warehouse_id: string }
 const modules = [
   ['products', 'Produtos'], ['warehouses', 'Armazéns'], ['locations', 'Endereços'],
   ['stock_balances', 'Estoque'], ['receipts', 'Recebimento'], ['picking_tasks', 'Picking'],
@@ -15,6 +18,19 @@ const modules = [
 const roleNames: Record<string, string> = { admin: 'Administrador', supervisor: 'Supervisor', operator: 'Operador', checker: 'Conferente', viewer: 'Consulta' }
 const moduleIcons: Record<string, string> = { dashboard: '⌂', products: '▦', warehouses: '▤', locations: '⌖', stock_balances: '▥', receipts: '↓', picking_tasks: '☷', replenishments: '↻', shipments: '↑', cycle_counts: '✓', stock_movements: '⇄' }
 const moduleDescriptions: Record<string, string> = { products: 'Cadastro e identificação de itens', warehouses: 'Unidades e centros de distribuição', locations: 'Ruas, posições e zonas', stock_balances: 'Saldo disponível por endereço', receipts: 'Entrada e conferência de mercadorias', picking_tasks: 'Separação de pedidos', replenishments: 'Reposição de posições de picking', shipments: 'Pedidos prontos para expedição', cycle_counts: 'Contagem física e divergências', stock_movements: 'Histórico de movimentações' }
+function formatCell(key: string, value: unknown) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (key === 'movement_type') return ({ receipt: 'Entrada', pick: 'Saída / picking', transfer: 'Transferência', adjustment: 'Ajuste', return: 'Devolução', putaway: 'Armazenagem', replenishment: 'Reposição', shipment: 'Expedição' } as Record<string, string>)[String(value)] || String(value)
+  if (key === 'created_at' || key.endsWith('_at')) return new Date(String(value)).toLocaleString('pt-BR')
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>
+    if (key === 'products') return `${record.sku || ''} ${record.name || ''}`.trim() || '—'
+    if (key === 'warehouses') return `${record.code || ''} ${record.name || ''}`.trim() || '—'
+    if (key === 'from_location' || key === 'to_location') return String(record.code || '—')
+    return '—'
+  }
+  return String(value)
+}
 const formFields: Record<string, { key: string; label: string; required?: boolean; type?: string }[]> = {
   products: [{ key: 'sku', label: 'SKU', required: true }, { key: 'name', label: 'Nome do produto', required: true }, { key: 'category', label: 'Categoria' }, { key: 'barcode', label: 'Código de barras' }, { key: 'unit', label: 'Unidade', required: true }, { key: 'min_stock', label: 'Estoque mínimo', type: 'number' }],
   warehouses: [{ key: 'code', label: 'Código', required: true }, { key: 'name', label: 'Nome', required: true }, { key: 'address', label: 'Endereço' }],
@@ -44,6 +60,20 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [pendingProfiles, setPendingProfiles] = useState<PendingProfile[]>([])
   const [approvingId, setApprovingId] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [moveProducts, setMoveProducts] = useState<ProductOption[]>([])
+  const [moveWarehouses, setMoveWarehouses] = useState<WarehouseOption[]>([])
+  const [moveLocations, setMoveLocations] = useState<LocationOption[]>([])
+  const [moveWarehouseId, setMoveWarehouseId] = useState('')
+  const [moveProductId, setMoveProductId] = useState('')
+  const [moveKind, setMoveKind] = useState('receipt')
+  const [moveFromId, setMoveFromId] = useState('')
+  const [moveToId, setMoveToId] = useState('')
+  const [moveQuantity, setMoveQuantity] = useState('1')
+  const [moveLot, setMoveLot] = useState('')
+  const [moveReference, setMoveReference] = useState('')
+  const [moveNotes, setMoveNotes] = useState('')
+  const [savingMovement, setSavingMovement] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false) })
@@ -113,6 +143,11 @@ export default function App() {
           })
           setRows([])
         }
+      } else if (page === 'stock_movements') {
+        const { data, error: queryError } = await supabase.from('stock_movements')
+          .select('*, products(name, sku), warehouses(name, code), from_location:locations!stock_movements_from_location_id_fkey(code), to_location:locations!stock_movements_to_location_id_fkey(code)')
+          .eq('workspace_id', profile!.workspace_id).order('created_at', { ascending: false }).limit(200)
+        if (!cancelled) { if (queryError) setMessage(queryError.message); setRows((data || []) as Record<string, unknown>[]) }
       } else {
         const { data, error: queryError } = await supabase.from(page).select('*').eq('workspace_id', profile!.workspace_id).order('created_at', { ascending: false }).limit(200)
         if (!cancelled) { if (queryError) setMessage(queryError.message); setRows((data || []) as Record<string, unknown>[]) }
@@ -121,7 +156,68 @@ export default function App() {
     }
     void load()
     return () => { cancelled = true }
-  }, [page, profile])
+  }, [page, profile, refreshKey])
+
+  useEffect(() => {
+    if (!showForm || page !== 'stock_movements' || !profile?.workspace_id) return
+    let cancelled = false
+    async function loadMovementOptions() {
+      const workspaceId = profile!.workspace_id!
+      const [productsResult, warehousesResult, locationsResult] = await Promise.all([
+        supabase.from('products').select('id, name, sku').eq('workspace_id', workspaceId).eq('active', true).order('name'),
+        supabase.from('warehouses').select('id, name, code').eq('workspace_id', workspaceId).eq('active', true).order('name'),
+        supabase.from('locations').select('id, code, warehouse_id').eq('workspace_id', workspaceId).eq('active', true).order('code')
+      ])
+      if (cancelled) return
+      if (productsResult.error || warehousesResult.error || locationsResult.error) {
+        setMessage(productsResult.error?.message || warehousesResult.error?.message || locationsResult.error?.message || 'Não foi possível carregar os cadastros.')
+        return
+      }
+      setMoveProducts((productsResult.data || []) as ProductOption[])
+      setMoveWarehouses((warehousesResult.data || []) as WarehouseOption[])
+      setMoveLocations((locationsResult.data || []) as LocationOption[])
+    }
+    void loadMovementOptions()
+    return () => { cancelled = true }
+  }, [showForm, page, profile])
+
+  async function submitStockMovement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!profile?.workspace_id) return
+    const isTransfer = moveKind === 'transfer'
+    const isOutbound = moveKind === 'pick' || moveKind === 'adjustment_out'
+    const fromLocation = isTransfer || isOutbound ? moveFromId : null
+    const toLocation = isTransfer ? moveToId : isOutbound ? null : moveToId
+    if (!moveWarehouseId || !moveProductId || !moveQuantity || Number(moveQuantity) <= 0 || (isTransfer && (!fromLocation || !toLocation)) || (isOutbound && !fromLocation) || (!isTransfer && !isOutbound && !toLocation)) {
+      setMessage('Preencha produto, armazém, quantidade e os endereços exigidos para o tipo de movimentação.')
+      return
+    }
+    setSavingMovement(true)
+    setMessage('')
+    const movementType = moveKind === 'adjustment_in' || moveKind === 'adjustment_out' ? 'adjustment' : moveKind
+    const { error: movementError } = await supabase.rpc('wms_process_stock_movement', {
+      p_workspace_id: profile.workspace_id,
+      p_warehouse_id: moveWarehouseId,
+      p_product_id: moveProductId,
+      p_movement_type: movementType,
+      p_quantity: Number(moveQuantity),
+      p_from_location_id: fromLocation,
+      p_to_location_id: toLocation,
+      p_lot_code: moveLot.trim(),
+      p_reference_code: moveReference.trim() || null,
+      p_notes: moveNotes.trim() || null
+    })
+    setSavingMovement(false)
+    if (movementError) {
+      setMessage(movementError.message.replace(/^.*?: /, ''))
+      return
+    }
+    setShowForm(false)
+    setMoveFromId(''); setMoveToId(''); setMoveQuantity('1'); setMoveLot(''); setMoveReference(''); setMoveNotes('')
+    setMessage('Movimentação registrada e saldo atualizado com sucesso.')
+    setRefreshKey(value => value + 1)
+  }
+
   async function authenticate(event: FormEvent) {
     event.preventDefault(); setError('')
     const result = signup
@@ -150,11 +246,11 @@ export default function App() {
   if (!profile.active) return <div className="center"><div className="setup-card"><h2>Acesso desativado</h2><p>Fale com o administrador do WMS.</p><button className="secondary" onClick={() => void supabase.auth.signOut()}>Sair</button></div></div>
   const visibleRows = rows.filter(row => Object.values(row).some(value => String(value ?? '').toLowerCase().includes(search.toLowerCase())))
   const title = page === 'dashboard' ? 'Dashboard' : modules.find(([key]) => key === page)?.[1] || page
-  return <div className="app"><aside className="sidebar"><div className="brand"><div className="brandmark">W</div><div><b>WMS <span>Control</span></b><small>GESTÃO DE ARMAZÉM</small></div></div><button className={page === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setPage('dashboard')}><span className="nav-icon">⌂</span> Visão geral</button><div className="nav-label">OPERAÇÃO</div><div className="nav-search"><span>⌕</span><input aria-label="Filtrar módulos" placeholder="Encontrar módulo..." value={navSearch} onChange={e => setNavSearch(e.target.value)} /></div>{modules.filter(([key, label]) => label.toLowerCase().includes(navSearch.toLowerCase()) || key === 'products' && navSearch.toLowerCase().includes('produto')).map(([key, label]) => <button key={key} className={page === key ? 'nav active' : 'nav'} onClick={() => setPage(key)}><span className="nav-icon">{moduleIcons[key] || '•'}</span>{label}{key === 'stock_balances' && <span className="nav-tag">WMS</span>}</button>)}<div className="sidebar-foot"><span className="status-dot"></span> Sistema conectado<div className="sidebar-user-role">{roleNames[profile.role] || profile.role}</div></div></aside><main className="main"><header className="topbar"><div className="breadcrumb"><span>WMS Control</span><b>/</b><strong>{title}</strong></div><div className="userbox"><div className="avatar">{(profile.full_name || session.user.email || 'U').slice(0,1).toUpperCase()}</div><div className="user-details"><strong>{profile.full_name || session.user.email}</strong><small>{roleNames[profile.role] || profile.role}</small></div><button className="secondary small logout-button" onClick={() => void supabase.auth.signOut()}>Sair ↗</button></div></header><section className="content"><div className="pagehead"><div><div className="eyebrow">PAINEL OPERACIONAL</div><h1>{page === 'dashboard' ? 'Visão geral' : title}</h1><p>{page === 'dashboard' ? 'Acompanhe o armazém e acesse rapidamente suas operações.' : moduleDescriptions[page] || 'Consulte e gerencie os registros desta operação.'}</p></div>{formFields[page] && profile.role !== 'viewer' && <button className="primary" onClick={() => setShowForm(true)}><span className="button-plus">＋</span> Novo registro</button>}</div>{message && <div className="notice">{message}<button onClick={() => setMessage('')}>×</button></div>}{profile.role === 'admin' && <section className="panel" style={{ marginBottom: 20, padding: 18 }}><div className="toolbar" style={{ justifyContent: 'space-between' }}><div><h2 style={{ margin: 0 }}>Aprovação de cadastros</h2><p className="muted">Novas contas só acessam a operação depois da aprovação.</p></div><span className="muted">{pendingProfiles.length} pendente(s)</span></div>{pendingProfiles.length === 0 ? <div className="empty">Nenhum cadastro aguardando aprovação.</div> : <div className="table-wrap"><table><thead><tr><th>Nome</th><th>Solicitado em</th><th>Ação</th></tr></thead><tbody>{pendingProfiles.map(item => <tr key={item.id}><td>{item.full_name || 'Sem nome informado'}</td><td>{new Date(item.created_at).toLocaleString('pt-BR')}</td><td><button className="primary small" disabled={approvingId === item.id} onClick={() => void approveProfile(item.id)}>{approvingId === item.id ? 'Aprovando…' : 'Aprovar como operador'}</button></td></tr>)}</tbody></table></div>}</section>}{page === 'dashboard' ? <div className="section-heading"><div><h2>Resumo do armazém</h2><p>Visão rápida dos cadastros e atividades por módulo</p></div><span className="live-pill"><span className="status-dot"></span> Atualizado</span></div><div className="stats operational-stats">
+  return <div className="app"><aside className="sidebar"><div className="brand"><div className="brandmark">W</div><div><b>WMS <span>Control</span></b><small>GESTÃO DE ARMAZÉM</small></div></div><button className={page === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setPage('dashboard')}><span className="nav-icon">⌂</span> Visão geral</button><div className="nav-label">OPERAÇÃO</div><div className="nav-search"><span>⌕</span><input aria-label="Filtrar módulos" placeholder="Encontrar módulo..." value={navSearch} onChange={e => setNavSearch(e.target.value)} /></div>{modules.filter(([key, label]) => label.toLowerCase().includes(navSearch.toLowerCase()) || key === 'products' && navSearch.toLowerCase().includes('produto')).map(([key, label]) => <button key={key} className={page === key ? 'nav active' : 'nav'} onClick={() => setPage(key)}><span className="nav-icon">{moduleIcons[key] || '•'}</span>{label}{key === 'stock_balances' && <span className="nav-tag">WMS</span>}</button>)}<div className="sidebar-foot"><span className="status-dot"></span> Sistema conectado<div className="sidebar-user-role">{roleNames[profile.role] || profile.role}</div></div></aside><main className="main"><header className="topbar"><div className="breadcrumb"><span>WMS Control</span><b>/</b><strong>{title}</strong></div><div className="userbox"><div className="avatar">{(profile.full_name || session.user.email || 'U').slice(0,1).toUpperCase()}</div><div className="user-details"><strong>{profile.full_name || session.user.email}</strong><small>{roleNames[profile.role] || profile.role}</small></div><button className="secondary small logout-button" onClick={() => void supabase.auth.signOut()}>Sair ↗</button></div></header><section className="content"><div className="pagehead"><div><div className="eyebrow">PAINEL OPERACIONAL</div><h1>{page === 'dashboard' ? 'Visão geral' : title}</h1><p>{page === 'dashboard' ? 'Acompanhe o armazém e acesse rapidamente suas operações.' : moduleDescriptions[page] || 'Consulte e gerencie os registros desta operação.'}</p></div>{(formFields[page] || page === 'stock_movements') && profile.role !== 'viewer' && <button className="primary" onClick={() => { setShowForm(true); setMessage('') }}><span className="button-plus">＋</span> {page === 'stock_movements' ? 'Nova movimentação' : 'Novo registro'}</button>}</div>{message && <div className="notice">{message}<button onClick={() => setMessage('')}>×</button></div>}{profile.role === 'admin' && <section className="panel" style={{ marginBottom: 20, padding: 18 }}><div className="toolbar" style={{ justifyContent: 'space-between' }}><div><h2 style={{ margin: 0 }}>Aprovação de cadastros</h2><p className="muted">Novas contas só acessam a operação depois da aprovação.</p></div><span className="muted">{pendingProfiles.length} pendente(s)</span></div>{pendingProfiles.length === 0 ? <div className="empty">Nenhum cadastro aguardando aprovação.</div> : <div className="table-wrap"><table><thead><tr><th>Nome</th><th>Solicitado em</th><th>Ação</th></tr></thead><tbody>{pendingProfiles.map(item => <tr key={item.id}><td>{item.full_name || 'Sem nome informado'}</td><td>{new Date(item.created_at).toLocaleString('pt-BR')}</td><td><button className="primary small" disabled={approvingId === item.id} onClick={() => void approveProfile(item.id)}>{approvingId === item.id ? 'Aprovando…' : 'Aprovar como operador'}</button></td></tr>)}</tbody></table></div>}</section>}{page === 'dashboard' ? <div className="section-heading"><div><h2>Resumo do armazém</h2><p>Visão rápida dos cadastros e atividades por módulo</p></div><span className="live-pill"><span className="status-dot"></span> Atualizado</span></div><div className="stats operational-stats">
           <button className="stat" onClick={() => setPage('receipts')}><div className="stat-top"><span className="stat-icon tone-0">↓</span><span className="stat-arrow">↗</span></div><strong>{operations.pendingReceipts}</strong><small>Recebimentos pendentes</small><em>Entradas aguardando conferência</em></button>
           <button className="stat" onClick={() => setPage('picking_tasks')}><div className="stat-top"><span className="stat-icon tone-1">☷</span><span className="stat-arrow">↗</span></div><strong>{operations.pendingPicking}</strong><small>Picking em aberto</small><em>Tarefas para separar</em></button>
           <button className="stat" onClick={() => setPage('replenishments')}><div className="stat-top"><span className="stat-icon tone-2">↻</span><span className="stat-arrow">↗</span></div><strong>{operations.pendingReplenishments}</strong><small>Reposições pendentes</small><em>Abastecimentos em andamento</em></button>
           <button className="stat" onClick={() => setPage('shipments')}><div className="stat-top"><span className="stat-icon tone-3">↑</span><span className="stat-arrow">↗</span></div><strong>{operations.readyShipments}</strong><small>Expedições prontas</small><em>Pedidos aguardando despacho</em></button>
           <button className="stat" onClick={() => setPage('products')}><div className="stat-top"><span className="stat-icon tone-0">!</span><span className="stat-arrow">↗</span></div><strong>{operations.lowStock}</strong><small>Produtos abaixo do mínimo</small><em>Estoque requer atenção</em></button>
-        </div><div className="section-heading"><div><h2>Cadastros do armazém</h2><p>Quantidade de registros por módulo</p></div></div><div className="stats">{modules.map(([key, label], index) => <button className="stat" key={key} onClick={() => setPage(key)}><div className="stat-top"><span className={`stat-icon tone-${index % 4}`}>{moduleIcons[key] || '•'}</span><span className="stat-arrow">↗</span></div><strong>{counts[key] ?? '—'}</strong><small>{label}</small><em>{moduleDescriptions[key] || 'Acessar módulo'}</em></button>)}</div><div className="section-heading quick-heading"><div><h2>Acesso rápido</h2><p>Comece pelas tarefas mais comuns da operação</p></div></div><div className="quick-grid"><button className="quick-card" onClick={() => setPage('receipts')}><span className="quick-icon blue">↓</span><span><strong>Receber mercadoria</strong><small>Registrar entrada e conferência</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('picking_tasks')}><span className="quick-icon violet">☷</span><span><strong>Separar pedidos</strong><small>Acompanhar tarefas de picking</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('stock_balances')}><span className="quick-icon teal">▥</span><span><strong>Consultar estoque</strong><small>Ver saldos registrados</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('cycle_counts')}><span className="quick-icon amber">✓</span><span><strong>Fazer inventário</strong><small>Conferir quantidades físicas</small></span><b>→</b></button></div> : <div className="panel"><div className="table-toolbar"><div className="table-title"><h2>{title}</h2><p>Pesquise e consulte os registros do módulo</p></div><div className="toolbar"><div className="table-search"><span>⌕</span><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar registros..." /></div><button className="secondary" onClick={() => setPage(page)}>↻ Atualizar</button></div></div><div className="result-count">{visibleRows.length} registro(s) encontrado(s)</div>{busy ? <div className="empty">Carregando…</div> : visibleRows.length === 0 ? <div className="empty">Nenhum registro encontrado.</div> : <div className="table-wrap"><table><thead><tr>{Object.keys(visibleRows[0]).filter(key => key !== 'workspace_id').slice(0, 9).map(key => <th key={key}>{key.replaceAll('_', ' ')}</th>)}</tr></thead><tbody>{visibleRows.map((row, index) => <tr key={String(row.id || index)}>{Object.keys(row).filter(key => key !== 'workspace_id').slice(0, 9).map(key => <td key={key}>{String(row[key] ?? '—')}</td>)}</tr>)}</tbody></table></div>}</div>}<footer>WMS Control · Azul, branco e preto · Dados persistidos no Supabase</footer></section></main>{showForm && formFields[page] && <div className="modal-backdrop" onClick={() => setShowForm(false)}><div className="modal" onClick={event => event.stopPropagation()}><div className="modal-head"><h2>Novo registro · {title}</h2><button className="secondary small" onClick={() => setShowForm(false)}>✕</button></div><form onSubmit={saveRecord}><div className="form-grid">{formFields[page].map(field => <label key={field.key}>{field.label}<input name={field.key} type={field.type || 'text'} min={field.type === 'number' ? 0 : undefined} required={!!field.required} /></label>)}</div><div className="modal-actions"><button type="button" className="secondary" onClick={() => setShowForm(false)}>Cancelar</button><button type="submit" className="primary">Salvar no banco</button></div></form></div></div>}</div>
+        </div><div className="section-heading"><div><h2>Cadastros do armazém</h2><p>Quantidade de registros por módulo</p></div></div><div className="stats">{modules.map(([key, label], index) => <button className="stat" key={key} onClick={() => setPage(key)}><div className="stat-top"><span className={`stat-icon tone-${index % 4}`}>{moduleIcons[key] || '•'}</span><span className="stat-arrow">↗</span></div><strong>{counts[key] ?? '—'}</strong><small>{label}</small><em>{moduleDescriptions[key] || 'Acessar módulo'}</em></button>)}</div><div className="section-heading quick-heading"><div><h2>Acesso rápido</h2><p>Comece pelas tarefas mais comuns da operação</p></div></div><div className="quick-grid"><button className="quick-card" onClick={() => setPage('receipts')}><span className="quick-icon blue">↓</span><span><strong>Receber mercadoria</strong><small>Registrar entrada e conferência</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('picking_tasks')}><span className="quick-icon violet">☷</span><span><strong>Separar pedidos</strong><small>Acompanhar tarefas de picking</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('stock_balances')}><span className="quick-icon teal">▥</span><span><strong>Consultar estoque</strong><small>Ver saldos registrados</small></span><b>→</b></button><button className="quick-card" onClick={() => setPage('cycle_counts')}><span className="quick-icon amber">✓</span><span><strong>Fazer inventário</strong><small>Conferir quantidades físicas</small></span><b>→</b></button></div> : <div className="panel"><div className="table-toolbar"><div className="table-title"><h2>{title}</h2><p>Pesquise e consulte os registros do módulo</p></div><div className="toolbar"><div className="table-search"><span>⌕</span><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar registros..." /></div><button className="secondary" onClick={() => setRefreshKey(value => value + 1)}>↻ Atualizar</button></div></div><div className="result-count">{visibleRows.length} registro(s) encontrado(s)</div>{busy ? <div className="empty">Carregando…</div> : visibleRows.length === 0 ? <div className="empty">Nenhum registro encontrado.</div> : <div className="table-wrap"><table><thead><tr>{Object.keys(visibleRows[0]).filter(key => key !== 'workspace_id').slice(0, 9).map(key => <th key={key}>{key.replaceAll('_', ' ')}</th>)}</tr></thead><tbody>{visibleRows.map((row, index) => <tr key={String(row.id || index)}>{Object.keys(row).filter(key => key !== 'workspace_id').slice(0, 9).map(key => <td key={key}>{formatCell(key, row[key])}</td>)}</tr>)}</tbody></table></div>}</div>}<footer>WMS Control · Azul, branco e preto · Dados persistidos no Supabase</footer></section></main>{showForm && page === 'stock_movements' && <div className="modal-backdrop" onClick={() => setShowForm(false)}><div className="modal movement-modal" onClick={event => event.stopPropagation()}><div className="modal-head"><div><h2>Nova movimentação</h2><p className="muted">O saldo e o histórico serão atualizados juntos.</p></div><button type="button" className="secondary small" onClick={() => setShowForm(false)}>✕</button></div><form onSubmit={submitStockMovement}><div className="form-grid"><label>Tipo de operação<select value={moveKind} onChange={e => { setMoveKind(e.target.value); setMoveFromId(''); setMoveToId('') }}><option value="receipt">Entrada de estoque</option><option value="pick">Saída de estoque</option><option value="transfer">Transferência entre endereços</option><option value="adjustment_in">Ajuste positivo</option><option value="adjustment_out">Ajuste negativo</option></select></label><label>Armazém<select required value={moveWarehouseId} onChange={e => { setMoveWarehouseId(e.target.value); setMoveFromId(''); setMoveToId('') }}><option value="">Selecione o armazém</option>{moveWarehouses.map(item => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select></label><label className="field-wide">Produto<select required value={moveProductId} onChange={e => setMoveProductId(e.target.value)}><option value="">Selecione o produto</option>{moveProducts.map(item => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></label>{(moveKind === 'pick' || moveKind === 'transfer' || moveKind === 'adjustment_out') && <label>Endereço de origem<select required value={moveFromId} onChange={e => setMoveFromId(e.target.value)}><option value="">Selecione a origem</option>{moveLocations.filter(item => item.warehouse_id === moveWarehouseId).map(item => <option key={item.id} value={item.id}>{item.code}</option>)}</select></label>}{(moveKind === 'receipt' || moveKind === 'transfer' || moveKind === 'adjustment_in') && <label>Endereço de destino<select required value={moveToId} onChange={e => setMoveToId(e.target.value)}><option value="">Selecione o destino</option>{moveLocations.filter(item => item.warehouse_id === moveWarehouseId).map(item => <option key={item.id} value={item.id}>{item.code}</option>)}</select></label>}<label>Quantidade<input type="number" min="0.001" step="any" required value={moveQuantity} onChange={e => setMoveQuantity(e.target.value)} /></label><label>Lote (opcional)<input value={moveLot} onChange={e => setMoveLot(e.target.value)} placeholder="Ex.: LOTE-2026" /></label><label>Documento de referência<input value={moveReference} onChange={e => setMoveReference(e.target.value)} placeholder="NF, pedido ou protocolo" /></label><label className="field-wide">Observações<textarea rows={3} value={moveNotes} onChange={e => setMoveNotes(e.target.value)} placeholder="Motivo ou detalhe da movimentação" /></label></div><div className="modal-actions"><button type="button" className="secondary" onClick={() => setShowForm(false)}>Cancelar</button><button type="submit" className="primary" disabled={savingMovement}>{savingMovement ? 'Processando…' : 'Confirmar movimentação'}</button></div></form></div></div>}{showForm && formFields[page] && <div className="modal-backdrop" onClick={() => setShowForm(false)}><div className="modal" onClick={event => event.stopPropagation()}><div className="modal-head"><h2>Novo registro · {title}</h2><button className="secondary small" onClick={() => setShowForm(false)}>✕</button></div><form onSubmit={saveRecord}><div className="form-grid">{formFields[page].map(field => <label key={field.key}>{field.label}<input name={field.key} type={field.type || 'text'} min={field.type === 'number' ? 0 : undefined} required={!!field.required} /></label>)}</div><div className="modal-actions"><button type="button" className="secondary" onClick={() => setShowForm(false)}>Cancelar</button><button type="submit" className="primary">Salvar no banco</button></div></form></div></div>}</div>
 }
