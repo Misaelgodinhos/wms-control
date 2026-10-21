@@ -4,3 +4,13 @@
 @media(max-width:1200px){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}.content{padding:27px 24px}.topbar{padding:0 24px}}
 @media(max-width:850px){.sidebar{width:220px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.quick-grid{grid-template-columns:1fr}.content{padding:24px 18px}.topbar{padding:0 18px}}
 @media(max-width:620px){.app{display:block}.sidebar{width:100%;min-height:auto;padding:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.brand{grid-column:1/-1;padding:4px 5px 14px}.sidebar>.nav:nth-of-type(1){grid-column:1/-1}.nav-label{grid-column:1/-1;padding:12px 8px 6px}.nav-search{grid-column:1/-1;margin:3px 2px 7px}.nav{padding:10px 9px;font-size:11px;gap:8px;min-height:39px}.nav-icon{font-size:15px;width:17px}.sidebar-foot{grid-column:1/-1;margin-top:8px;padding:12px 6px 0}.topbar{height:auto;min-height:66px;padding:11px 13px}.breadcrumb{font-size:10px;gap:6px}.userbox{gap:7px}.avatar{width:30px;height:30px}.user-details{display:none}.logout-button{margin-left:0;padding:7px 9px}.content{padding:22px 13px}.pagehead{align-items:flex-start;flex-direction:column;margin-bottom:23px}.pagehead h1{font-size:25px}.pagehead p{font-size:12px}.pagehead>.primary{width:100%}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:26px}.stat{padding:13px;border-radius:12px;gap:7px}.stat-icon{width:30px;height:30px}.stat strong{font-size:24px}.stat small{font-size:11px}.stat em{font-size:9px;min-height:26px}.section-heading h2{font-size:15px}.section-heading p{font-size:10px}.live-pill{font-size:9px;padding:6px 8px}.quick-grid{gap:9px}.quick-card{padding:12px;gap:10px}.quick-card strong{font-size:11px}.quick-card small{font-size:9px}.panel{padding:13px;border-radius:12px}.table-toolbar{align-items:stretch}.table-toolbar,.table-toolbar .toolbar{width:100%}.table-toolbar .toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto}.table-search{min-width:0}.table-toolbar .secondary{padding:9px}.form-grid{grid-template-columns:1fr}.modal{padding:18px}.modal-actions{flex-wrap:wrap}.modal-actions button{flex:1}footer{line-height:1.6}}
+
+/* Stock movement workflow */
+.form-grid select,.form-grid textarea{border:1px solid #dfe6f0;border-radius:9px;padding:11px 12px;outline-color:#2764e7;width:100%;background:#fff;color:#24314a;min-width:0}
+.form-grid textarea{resize:vertical;line-height:1.5}
+.field-wide{grid-column:1/-1}
+.movement-modal{width:min(720px,100%)}
+.movement-modal .modal-head{align-items:flex-start}
+.movement-modal .modal-head .muted{margin:5px 0 0;font-size:12px}
+.movement-modal button:disabled{opacity:.6;cursor:wait}
+@media(max-width:620px){.field-wide{grid-column:auto}.movement-modal .form-grid{grid-template-columns:1fr}.movement-modal .modal-head{gap:12px}}
